@@ -74,6 +74,10 @@
               pyecharts
               ccxt
               nest-asyncio
+              tqdm
+              distutils
+              scikit-learn
+              matplotlib
             ];
           }
         );
@@ -93,13 +97,6 @@
               torch
               dill
               gym-trading-env
-              tqdm
-              distutils
-              scikit-learn
-              matplotlib
-              # nix
-              nixfmt-rfc-style
-              nixd
             ];
         };
       }

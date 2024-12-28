@@ -63,7 +63,7 @@ class ModelBuilder():
 
     def dense(self, in_features, out_features):
         if self.noisy:
-            return NoisyLinear(in_features, out_features, sigma=0.1)
+            return NoisyLinear(in_features, out_features, sigma=0.5)
         return nn.Linear(in_features, out_features)
 
     def build_model(self, trainable=True):
