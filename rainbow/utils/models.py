@@ -91,7 +91,7 @@ class ModelBuilder():
                     layers = []
                     input_dim = builder.nb_states
                     for units in builder.units:
-                        layers.append(self.builder.dense(input_dim, units))
+                        layers.append(nn.Linear(input_dim, units))
                         layers.append(nn.ReLU())
                         if self.dropout > 0:
                             layers.append(nn.Dropout(self.dropout))
@@ -171,4 +171,7 @@ class ModelBuilder():
                 return output
 
         model = Net(self)
+        if not trainable:
+            for param in model.parameters():
+                param.requires_grad = False
         return model

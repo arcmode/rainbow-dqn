@@ -212,7 +212,8 @@ class Rainbow:
         weights = torch.tensor(weights, dtype=torch.float32)
 
         best_ap = torch.argmax(self.model(states_prime_n).detach(), dim=1)
-        max_q_sp_ap = self.target_model(states_prime_n).gather(1, best_ap.unsqueeze(1)).squeeze(1)
+        with torch.no_grad():
+            max_q_sp_ap = self.target_model(states_prime_n).gather(1, best_ap.unsqueeze(1)).squeeze(1)
         q_a_target = rewards_n + (1 - dones_n) * (self.gamma ** self.multi_steps) * max_q_sp_ap
 
         q_prediction = self.model(states)
@@ -267,7 +268,8 @@ class Rainbow:
         l = b_j.floor().long()
         u = b_j.ceil().long()
 
-        p_max_ap_sp = self.target_model(states_prime).gather(1, best_a_sp.unsqueeze(1).unsqueeze(1).expand(-1, -1, self.nb_atoms)).squeeze(1)
+        with torch.no_grad():
+            p_max_ap_sp = self.target_model(states_prime).gather(1, best_a_sp.unsqueeze(1).unsqueeze(1).expand(-1, -1, self.nb_atoms)).squeeze(1)
 
         m = torch.zeros(batch_size, self.nb_atoms)
         offset = torch.linspace(0, (batch_size - 1) * self.nb_atoms, batch_size).long().unsqueeze(1).expand(batch_size, self.nb_atoms)
