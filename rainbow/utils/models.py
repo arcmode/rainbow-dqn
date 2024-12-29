@@ -80,6 +80,9 @@ class ModelBuilder():
                 self.l2_reg = builder.l2_reg
                 self.noisy = builder.noisy
 
+                if self.adversarial:
+                    self.aggregator = AdversarialModelAggregator()
+
                 if self.recurrent:
                     self.lstm_layers = nn.ModuleList()
                     input_dim = builder.nb_states
@@ -121,12 +124,9 @@ class ModelBuilder():
             def forward(self, x):
                 if self.recurrent:
                     h = x
-                    for i, lstm in enumerate(self.lstm_layers):
+                    for lstm in self.lstm_layers:
                         h, _ = lstm(h)
-                        if i + 1 != len(self.lstm_layers):
-                            pass
-                        else:
-                            h = h[:, -1, :]
+                    h = h[:, -1, :]
                 else:
                     h = self.main_stream(x)
 
@@ -143,7 +143,7 @@ class ModelBuilder():
                     value_stream = self.value_stream_fc2(value_stream)
 
                     outputs = {"value": value_stream, "actions": action_stream}
-                    output = AdversarialModelAggregator()(outputs)
+                    output = self.aggregator(outputs)
                     output = self.output_activation(output)
 
                 elif self.distributional and not self.adversarial:
@@ -163,7 +163,7 @@ class ModelBuilder():
                     value_stream = self.value_stream_fc2(value_stream)
 
                     outputs = {"value": value_stream.squeeze(-1), "actions": action_stream}
-                    output = AdversarialModelAggregator()(outputs)[:, 0, :]
+                    output = self.aggregator(outputs)[:, 0, :]
 
                 else:
                     output = self.output_layer(h)

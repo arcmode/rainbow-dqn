@@ -59,3 +59,67 @@ agent = Rainbow(
     name = "Rainbow",
 )
 ```
+
+#### Training
+
+##### Use Optimizer Metrics to Diagnose Training Behavior
+
+By tracking these statistics, you can gain insights into the training dynamics:
+
+- **Gradient Norm**: Indicates how large the gradients are. Small gradients may suggest that the model is near a minimum or stuck in a flat region.
+- **Update Norm**: Shows how much the parameters are being updated. Small updates may indicate convergence or slow progress.
+- **Momentum Norm**: Reflects the accumulated gradient information used by the optimizer to accelerate convergence.
+- **Angle Between Gradient and Momentum**: Provides insight into whether the momentum is aligned with the current gradient. A small angle suggests the momentum is reinforcing the current gradient direction.
+- **Angle Between Gradient and Update**: Helps understand how the optimizer is combining the gradient and momentum to update the parameters.
+
+**Interpretation:**
+
+- **Convergence to a Local Minimum**:
+  - **Gradient Norm**: Small and decreasing.
+  - **Update Norm**: Small and decreasing.
+  - **Momentum Norm**: Decreasing.
+  - **Angles**: May fluctuate as the optimizer fine-tunes the parameters.
+
+- **Stuck in a Flat Region**:
+  - **Gradient Norm**: Small but not decreasing.
+  - **Update Norm**: Small but possibly larger than gradient norm.
+  - **Momentum Norm**: Remaining relatively constant or not decreasing as expected.
+  - **Angles**: Large angles might indicate that momentum is not helping to escape the flat region.
+
+**Actionable Steps:**
+
+- **If Converged to a Local Minimum**:
+  - Training may be complete.
+  - Consider evaluating the model's performance.
+
+- **If Stuck in a Flat Region**:
+  - **Increase the Learning Rate**: Helps the optimizer make larger updates to escape the flat region.
+  - **Adjust Learning Rate Schedule**: Implement a dynamic learning rate scheduler that increases the learning rate when progress stalls.
+  - **Modify the Optimizer Parameters**: Tweak optimizer parameters like `eps` in Adam.
+  - **Consider Different Optimizers**: Experiment with optimizers like RMSprop or SGD with momentum.
+
+### Example of Dynamic Learning Rate Adjustment
+
+Implement a learning rate scheduler that increases the learning rate when the gradient norm falls below a threshold:
+
+```python
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+# In your agent's __init__ function
+self.lr_scheduler = ReduceLROnPlateau(self.model_optimizer, mode='min', factor=1.1, patience=1000)
+
+# In your train_step function, after updating the optimizer
+self.lr_scheduler.step(metrics['grad_norm'])
+```
+
+**Note:** Adjust the `factor`, `patience`, and other parameters of `ReduceLROnPlateau` to suit your needs.
+
+### Conclusion
+
+By integrating the tracking of optimizer statistics into your training loop and logging them with TensorBoard, you can monitor the training process more comprehensively. This allows you to make informed decisions about adjusting hyperparameters like the learning rate to address issues like slow convergence in flat regions of the loss landscape.
+
+**References:**
+
+- [Understanding Adam Optimizer](https://towardsdatascience.com/adam-latest-trends-in-deep-learning-optimization-6be9a291375c)
+- [PyTorch Optimizer Documentation](https://pytorch.org/docs/stable/optim.html)
+- [TensorBoard for PyTorch](https://pytorch.org/docs/stable/tensorboard.html)

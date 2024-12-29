@@ -28,13 +28,20 @@ class Rainbow:
             # Multi Steps replay
             multi_steps = 1,
             # Distributional
-            distributional = False, nb_atoms = 51, v_min= -200, v_max= 200,
+            distributional = False,
+            nb_atoms = 51,
+            v_min= -200,
+            v_max= 200,
             # Prioritized replay
-            prioritized_replay = False, prioritized_replay_alpha =0.65, prioritized_replay_beta_function = lambda episode, step : min(1, 0.4 + 0.6*step/50_000),
+            prioritized_replay = False,
+            prioritized_replay_alpha =0.65,
+            prioritized_replay_beta_function = lambda episode, step : min(1, 0.4 + 0.6*step/50_000),
             # Vectorized envs
             simultaneous_training_env = 1,
             train_every = 1,
             name = "Rainbow",
+            # Tensorboard
+            tensorboard = False
         ):
         self.name = name
         self.nb_states = nb_states
@@ -50,6 +57,7 @@ class Rainbow:
         self.train_every = train_every
         self.multi_steps = multi_steps
         self.simultaneous_training_env = simultaneous_training_env
+        self.tensorboard = tensorboard
 
         self.recurrent = window > 1
         self.window = window
@@ -85,10 +93,6 @@ class Rainbow:
         self.target_model.load_state_dict(self.model.state_dict())
         self.model_optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate, eps=1.5E-4)
 
-        # Initialize Tensorboard
-        # self.log_dir = f"logs/{name}_{self.start_time.strftime('%Y_%m_%d-%H_%M_%S')}"
-        # self.train_summary_writer = tf.summary.create_file_writer(self.log_dir)
-
         # History
         self.steps = 0
         self.losses = []
@@ -103,6 +107,12 @@ class Rainbow:
             self.zs = torch.linspace(v_min, v_max, nb_atoms)
 
         self.start_time = datetime.datetime.now()
+
+        # Initialize Tensorboard
+        if self.tensorboard:
+            from torch.utils.tensorboard import SummaryWriter
+            self.log_dir = f"logs/{name}_{self.start_time.strftime('%Y_%m_%d-%H_%M_%S')}"
+            self.train_summary_writer = SummaryWriter(self.log_dir)
 
     def new_episode(self, i_env):
         self.episode_count[i_env] += 1
@@ -151,14 +161,21 @@ class Rainbow:
                 self.prioritized_replay_beta_function(sum(self.episode_count), self.steps)
             )
 
-            loss_value, td_errors = self.train_step(states, actions, rewards, states_prime, dones, importance_weights)
+            loss_value, td_errors, metrics = self.train_step(states, actions, rewards, states_prime, dones, importance_weights)
             self.replay_memory.update_priority(batch_indexes, td_errors)
 
             self.losses.append(float(loss_value))
 
-        # Tensorboard
-        # with self.train_summary_writer.as_default():
-        #     tf.summary.scalar('Step Training Loss', loss_value, step=self.total_stats['training_steps'])
+            # Tensorboard
+            if self.tensorboard:
+                self.train_summary_writer.add_scalar('Step Training Loss', loss_value, self.steps)
+                self.train_summary_writer.add_scalar('Gradient Norm', metrics['grad_norm'], self.steps)
+                self.train_summary_writer.add_scalar('Update Norm', metrics['update_norm'], self.steps)
+                self.train_summary_writer.add_scalar('Momentum Norm', metrics['momentum_norm'], self.steps)
+                if not np.isnan(metrics['grad_momentum_angle']):
+                    self.train_summary_writer.add_scalar('Angle between Gradient and Momentum', metrics['grad_momentum_angle'], self.steps)
+                if not np.isnan(metrics['grad_update_angle']):
+                    self.train_summary_writer.add_scalar('Angle between Gradient and Update', metrics['grad_update_angle'], self.steps)
 
     def log(self, i_env=0):
         text_print = f"\
@@ -221,11 +238,32 @@ class Rainbow:
         td_errors = torch.abs(q_a_target - q_a_prediction)
         loss_value = (td_errors.pow(2) * weights).mean()
 
+        return self._optimize_with_metrics(loss_value, td_errors)
+
+    def _optimize_with_metrics(self, loss_value, td_errors):
         self.model_optimizer.zero_grad()
         loss_value.backward()
+
+        # Opimizer metrics
+        metrics = {}
+        grad_norm, grad_vector = self.compute_grad()
+        metrics['grad_norm'] = grad_norm
+
+        # Save parameters before the update
+        parameters_before = [p.clone().detach() for p in self.model.parameters()]
+        momentum_norm, momentum_vector = self.compute_momentum()
+        metrics['momentum_norm'] = momentum_norm
+        metrics['grad_momentum_angle'] = self.compute_grad_momentum_angle(grad_vector, momentum_vector)
+
+        # Update parameters
         self.model_optimizer.step()
 
-        return loss_value.item(), td_errors.detach().cpu().numpy()
+        # Save parameters after the update
+        update_norm, update_vector = self.compute_update(parameters_before)
+        metrics['update_norm'] = update_norm
+        metrics['grad_update_angle'] = self.compute_grad_update_angle(grad_vector, update_vector)
+
+        return loss_value.item(), td_errors.detach().cpu().numpy(), metrics
 
     def _classic_pick_actions(self, states):
         states = torch.tensor(states, dtype=torch.float32)
@@ -287,11 +325,70 @@ class Rainbow:
         td_errors_weighted = td_errors * weights
         loss_value = td_errors_weighted.mean()
 
-        self.model_optimizer.zero_grad()
-        loss_value.backward()
-        self.model_optimizer.step()
+        return self._optimize_with_metrics(loss_value, td_errors)
 
-        return loss_value.item(), td_errors.detach().cpu().numpy()
+    # Compute gradient norm
+    def compute_grad(self):
+        grad_norm = 0.0
+        grad_vector = []
+        for p in self.model.parameters():
+            if p.grad is not None:
+                grad_norm += p.grad.data.norm(2).item() ** 2
+                grad_vector.append(p.grad.data.view(-1))
+        grad_norm = grad_norm ** 0.5
+        grad_vector = torch.cat(grad_vector)
+        return grad_norm, grad_vector
+
+    # Get optimizer state (momentum terms) before the update
+    def compute_momentum(self):
+        momentum_vector = []
+        for p in self.model.parameters():
+            state = self.model_optimizer.state[p]
+            if 'exp_avg' in state:
+                m = state['exp_avg']
+                momentum_vector.append(m.data.view(-1))
+        if len(momentum_vector) == 0:
+            # Optimizer state is empty; return zero norm and zero vector
+            total_params = sum(p.numel() for p in self.model.parameters())
+            momentum_vector = torch.zeros(total_params)
+            momentum_norm = 0.0
+        else:
+            momentum_vector = torch.cat(momentum_vector)
+            momentum_norm = momentum_vector.norm(2).item()
+        return momentum_norm, momentum_vector
+
+    # Compute angle between gradient and momentum
+    def compute_grad_momentum_angle(self, grad_vector, momentum_vector):
+        if momentum_vector.numel() == 0 or momentum_vector.norm(2).item() == 0.0:
+            # Momentum vector is zero; angle is undefined
+            return np.nan  # or return None
+        dot_product = torch.dot(grad_vector, momentum_vector)
+        return torch.acos(
+            dot_product / (grad_vector.norm(2) * momentum_vector.norm(2) + 1e-8)
+        ).item()
+
+    # Compute update norm
+    def compute_update(self, parameters_before):
+        update_vector = []
+        update_norm = 0.0
+        for p_before, p_after in zip(parameters_before, self.model.parameters()):
+            delta = p_after - p_before
+            update_norm += delta.data.norm(2).item() ** 2
+            update_vector.append(delta.data.view(-1))
+        update_norm = update_norm ** 0.5
+        update_vector = torch.cat(update_vector)
+        return update_norm, update_vector
+
+    # Compute angle between gradient and update
+    def compute_grad_update_angle(self, grad_vector, update_vector):
+        if update_vector.numel() == 0 or update_vector.norm(2).item() == 0.0:
+            # Update vector is zero; angle is undefined
+            return np.nan  # or return None
+        dot_product = torch.dot(grad_vector, update_vector)
+        return torch.acos(
+            dot_product / (grad_vector.norm(2) * update_vector.norm(2) + 1e-8)
+        ).item()
+
 
     def save(self, path, **kwargs):
         self.saved_path = path

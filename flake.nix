@@ -48,14 +48,10 @@
           }
         );
         gym-trading-env = (
-          pkgs.python3Packages.buildPythonPackage rec {
+          pkgs.python3Packages.buildPythonPackage {
             pname = "gym-trading-env";
-            version = "0.3.2"; # Replace with the correct version if necessary
+            version = "0.3.2";
             format = "pyproject";
-            # src = pkgs.fetchPypi {
-            #   inherit pname version;
-            #   sha256 = "sha256-W8zx7GEeyDu8hEjDH8KeCaRV8+nLFu810uhEJ1nMv0U=";
-            # };
             src = pkgs.fetchFromGitHub {
               owner = "sachetz";
               repo = "Gym-Trading-Env";
