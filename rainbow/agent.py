@@ -7,6 +7,8 @@ import os
 import dill
 import glob
 import json
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.tensorboard import SummaryWriter
 
 class Rainbow:
     def __init__(self,
@@ -20,7 +22,7 @@ class Rainbow:
             # Model builders
             window = 1, # 1 = Classic , >1 = RNN
             units = [32, 32],
-            dropout = 0,
+            dropout = 0.,
             adversarial = False,
             noisy = False,
             # Double DQN
@@ -40,6 +42,8 @@ class Rainbow:
             simultaneous_training_env = 1,
             train_every = 1,
             name = "Rainbow",
+            # Scheduler
+            scheduler = False,
             # Tensorboard
             tensorboard = False
         ):
@@ -58,6 +62,7 @@ class Rainbow:
         self.multi_steps = multi_steps
         self.simultaneous_training_env = simultaneous_training_env
         self.tensorboard = tensorboard
+        self.scheduler = scheduler
 
         self.recurrent = window > 1
         self.window = window
@@ -106,11 +111,14 @@ class Rainbow:
             self.delta_z = (v_max - v_min) / (nb_atoms - 1)
             self.zs = torch.linspace(v_min, v_max, nb_atoms)
 
+        # LR Scheduler
+        if self.scheduler:
+            self.lr_scheduler = ReduceLROnPlateau(self.model_optimizer, mode='min', factor=0.1, patience=100)
+
         self.start_time = datetime.datetime.now()
 
         # Initialize Tensorboard
         if self.tensorboard:
-            from torch.utils.tensorboard import SummaryWriter
             self.log_dir = f"logs/{name}_{self.start_time.strftime('%Y_%m_%d-%H_%M_%S')}"
             self.train_summary_writer = SummaryWriter(self.log_dir)
 
@@ -176,6 +184,7 @@ class Rainbow:
                     self.train_summary_writer.add_scalar('Angle between Gradient and Momentum', metrics['grad_momentum_angle'], self.steps)
                 if not np.isnan(metrics['grad_update_angle']):
                     self.train_summary_writer.add_scalar('Angle between Gradient and Update', metrics['grad_update_angle'], self.steps)
+                self.train_summary_writer.add_scalar('Learning Rate', metrics['learning_rate'], self.steps)
 
     def log(self, i_env=0):
         text_print = f"\
@@ -190,13 +199,15 @@ class Rainbow:
         epsilon = self.get_current_epsilon()
         if np.random.rand() < epsilon:
             return np.random.choice(self.nb_actions)
-        return self.pick_action(state)
+        with torch.no_grad():
+            return self.pick_action(state)
 
     def e_greedy_pick_actions(self, states):
         epsilon = self.get_current_epsilon()
         if np.random.rand() < epsilon:
             return np.random.choice(self.nb_actions, size=self.simultaneous_training_env)
-        return self.pick_actions(states).detach().cpu().numpy()
+        with torch.no_grad():
+            return self.pick_actions(states).detach().cpu().numpy()
 
     def format_time(self, t: datetime.timedelta):
         h = t.total_seconds() // (60 * 60)
@@ -209,6 +220,11 @@ class Rainbow:
             return self._distributional_train_step(*args, **kwargs)
         return self._classic_train_step(*args, **kwargs)
 
+    def validation_step(self, states, actions, rewards_n, states_prime_n, dones_n):
+        if self.distributional:
+            return self._distributional_validation_step(states, actions, rewards_n, states_prime_n, dones_n)
+        return self._classic_validation_step(states, actions, rewards_n, states_prime_n, dones_n)
+
     def pick_action(self, *args, **kwargs):
         if self.distributional:
             return int(self._distributional_pick_action(*args, **kwargs))
@@ -219,14 +235,12 @@ class Rainbow:
             return self._distributional_pick_actions(*args, **kwargs)
         return self._classic_pick_actions(*args, **kwargs)
 
-    # Classic DQN Core Functions
-    def _classic_train_step(self, states, actions, rewards_n, states_prime_n, dones_n, weights):
+    def _classic_td_errors(self, states, actions, rewards_n, states_prime_n, dones_n):
         states = torch.tensor(states, dtype=torch.float32)
         actions = torch.tensor(actions, dtype=torch.long)
         rewards_n = torch.tensor(rewards_n, dtype=torch.float32)
         states_prime_n = torch.tensor(states_prime_n, dtype=torch.float32)
         dones_n = torch.tensor(dones_n, dtype=torch.float32)
-        weights = torch.tensor(weights, dtype=torch.float32)
 
         best_ap = torch.argmax(self.model(states_prime_n).detach(), dim=1)
         with torch.no_grad():
@@ -235,7 +249,12 @@ class Rainbow:
 
         q_prediction = self.model(states)
         q_a_prediction = q_prediction.gather(1, actions.unsqueeze(1)).squeeze(1)
-        td_errors = torch.abs(q_a_target - q_a_prediction)
+        return torch.abs(q_a_target - q_a_prediction)
+
+    # Classic DQN Core Functions
+    def _classic_train_step(self, states, actions, rewards_n, states_prime_n, dones_n, weights):
+        weights = torch.tensor(weights, dtype=torch.float32)
+        td_errors = self._classic_td_errors(states, actions, rewards_n, states_prime_n, dones_n)
         loss_value = (td_errors.pow(2) * weights).mean()
 
         return self._optimize_with_metrics(loss_value, td_errors)
@@ -257,6 +276,12 @@ class Rainbow:
 
         # Update parameters
         self.model_optimizer.step()
+
+        # Adjust Learning Rate
+        learning_rate = self.model_optimizer.param_groups[0]['lr']
+        metrics['learning_rate'] = learning_rate # self.lr_scheduler.get_last_lr()[0]
+        if self.scheduler:
+            self.lr_scheduler.step(metrics['grad_norm'])
 
         # Save parameters after the update
         update_norm, update_vector = self.compute_update(parameters_before)
@@ -287,13 +312,12 @@ class Rainbow:
         q_a = torch.sum(p_a * self.zs, dim=-1)
         return q_a
 
-    def _distributional_train_step(self, states, actions, rewards, states_prime, dones, weights):
+    def _distributional_td_errors(self, states, actions, rewards, states_prime, dones):
         states = torch.tensor(states, dtype=torch.float32)
         actions = torch.tensor(actions, dtype=torch.long)
         rewards = torch.tensor(rewards, dtype=torch.float32)
         states_prime = torch.tensor(states_prime, dtype=torch.float32)
         dones = torch.tensor(dones, dtype=torch.float32)
-        weights = torch.tensor(weights, dtype=torch.float32)
 
         batch_size = states.size(0)
 
@@ -321,7 +345,11 @@ class Rainbow:
         p_s_a = self.model(states).gather(1, actions.unsqueeze(1).unsqueeze(1).expand(-1, -1, self.nb_atoms)).squeeze(1)
         p_s_a = p_s_a.clamp(1e-6, 1 - 1e-6)
 
-        td_errors = -torch.sum(m * torch.log(p_s_a), dim=1)
+        return -torch.sum(m * torch.log(p_s_a), dim=1)
+
+    def _distributional_train_step(self, states, actions, rewards, states_prime, dones, weights):
+        weights = torch.tensor(weights, dtype=torch.float32)
+        td_errors = self._distributional_td_errors(states, actions, rewards, states_prime, dones)
         td_errors_weighted = td_errors * weights
         loss_value = td_errors_weighted.mean()
 
@@ -388,6 +416,20 @@ class Rainbow:
         return torch.acos(
             dot_product / (grad_vector.norm(2) * update_vector.norm(2) + 1e-8)
         ).item()
+
+    def _classic_validation_step(self, states, actions, rewards_n, states_prime_n, dones_n):
+        with torch.no_grad():
+            td_errors = self._classic_td_errors(states, actions, rewards_n, states_prime_n, dones_n)
+            loss_value = (td_errors.pow(2)).mean()
+
+        return loss_value.item()
+
+    def _distributional_validation_step(self, states, actions, rewards, states_prime, dones):
+        with torch.no_grad():
+            td_errors = self._distributional_td_errors(states, actions, rewards, states_prime, dones)
+            loss_value = td_errors.mean()
+
+        return loss_value.item()
 
 
     def save(self, path, **kwargs):

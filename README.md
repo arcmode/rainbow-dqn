@@ -102,6 +102,8 @@ By tracking these statistics, you can gain insights into the training dynamics:
 
 Implement a learning rate scheduler that increases the learning rate when the gradient norm falls below a threshold:
 
+#### Reduce LR on Plateau
+
 ```python
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
@@ -113,6 +115,10 @@ self.lr_scheduler.step(metrics['grad_norm'])
 ```
 
 **Note:** Adjust the `factor`, `patience`, and other parameters of `ReduceLROnPlateau` to suit your needs.
+
+#### SGD with Cosine Annealed Warm Restarts
+
+TODO
 
 ### Conclusion
 

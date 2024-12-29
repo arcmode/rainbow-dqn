@@ -7,6 +7,7 @@ import gym_trading_env
 import nest_asyncio
 import dill
 import pickle
+import torch
 
 from sklearn.preprocessing import robust_scale
 
@@ -117,12 +118,12 @@ def make_agent():
         tensorboard = True,
     )
 
-def train(agent, training_envs, steps = 100_000):
+def train(agent, training_envs, validation_envs, steps=100_000, eval_every=5000):
     print("___________________________________________ TRAINING ___________________________________________")
     if 'obs' not in globals():
         global obs
         obs, info = training_envs.reset()
-    for _ in range(steps):
+    for step in range(steps):
         actions = agent.e_greedy_pick_actions(obs)
         next_obs, rewards, dones, truncateds, infos = training_envs.step(actions)
 
@@ -131,12 +132,74 @@ def train(agent, training_envs, steps = 100_000):
 
         obs = next_obs
 
-def evaluation(agent, validation_envs):
+        # Perform evaluation every eval_every steps
+        if step % eval_every == 0 and step > 0:
+            evaluation(agent, validation_envs)
+
+def evaluation(agent, validation_envs, validation_batch_size=256):
     print("___________________________________________ VALIDATION ___________________________________________")
     val_obs, info = validation_envs.reset()
     check = np.array([False for _ in range(val_obs.shape[0])])
+    # Create lists to store validation experiences
+    states_list = []
+    actions_list = []
+    rewards_list = []
+    next_states_list = []
+    dones_list = []
+
     while not np.all(check):
-        actions = agent.e_greedy_pick_actions(val_obs)
+        with torch.no_grad():
+            actions = agent.e_greedy_pick_actions(val_obs)
         next_obs, rewards, dones, truncateds, infos = validation_envs.step(actions)
+        # Store experiences
+        states_list.append(val_obs)
+        actions_list.append(actions)
+        rewards_list.append(rewards)
+        next_states_list.append(next_obs)
+        dones_list.append(dones)
         val_obs = next_obs
         check += dones + truncateds
+
+        # When enough experiences are collected, compute validation loss
+        if len(states_list) * len(states_list[0]) >= validation_batch_size:
+            # Convert lists to arrays
+            states_array = np.concatenate(states_list)
+            actions_array = np.concatenate(actions_list)
+            rewards_array = np.concatenate(rewards_list)
+            next_states_array = np.concatenate(next_states_list)
+            dones_array = np.concatenate(dones_list)
+
+            # Now, sample validation_batch_size experiences
+            idx = np.random.choice(len(states_array), validation_batch_size, replace=False)
+            validation_loss = agent.validation_step(
+                states_array[idx],
+                actions_array[idx],
+                rewards_array[idx],
+                next_states_array[idx],
+                dones_array[idx]
+            )
+            # Write validation loss to tensorboard
+            if agent.tensorboard:
+                agent.train_summary_writer.add_scalar('Validation Loss', validation_loss, agent.steps)
+            # Break after computing validation loss
+            break
+
+    # If episodes end before collecting enough experiences
+    if len(states_list) * len(states_list[0]) < validation_batch_size:
+        # Convert lists to arrays
+        states_array = np.concatenate(states_list)
+        actions_array = np.concatenate(actions_list)
+        rewards_array = np.concatenate(rewards_list)
+        next_states_array = np.concatenate(next_states_list)
+        dones_array = np.concatenate(dones_list)
+
+        if len(states_array) > 0:
+            validation_loss = agent.validation_step(
+                states_array,
+                actions_array,
+                rewards_array,
+                next_states_array,
+                dones_array
+            )
+            if agent.tensorboard:
+                agent.train_summary_writer.add_scalar('Validation Loss', validation_loss, agent.steps)
