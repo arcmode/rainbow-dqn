@@ -100,8 +100,6 @@ By tracking these statistics, you can gain insights into the training dynamics:
 
 ### Example of Dynamic Learning Rate Adjustment
 
-Implement a learning rate scheduler that increases the learning rate when the gradient norm falls below a threshold:
-
 #### Reduce LR on Plateau
 
 ```python
@@ -114,15 +112,19 @@ self.lr_scheduler = ReduceLROnPlateau(self.model_optimizer, mode='min', factor=1
 self.lr_scheduler.step(metrics['grad_norm'])
 ```
 
-**Note:** Adjust the `factor`, `patience`, and other parameters of `ReduceLROnPlateau` to suit your needs.
-
 #### SGD with Cosine Annealed Warm Restarts
 
 TODO
 
-### Conclusion
+### Metrics
 
-By integrating the tracking of optimizer statistics into your training loop and logging them with TensorBoard, you can monitor the training process more comprehensively. This allows you to make informed decisions about adjusting hyperparameters like the learning rate to address issues like slow convergence in flat regions of the loss landscape.
+1. Loss/{Training,Validation}
+2. Grad/{Norm,Momentum,Update}
+3. Angle/{Grad-Momentum,Grad-Update}
+4. Rewards
+5. Etc.
+
+![Tensorboard](./metrics.png)
 
 **References:**
 
