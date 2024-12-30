@@ -186,6 +186,19 @@ class Rainbow:
         if self.tensorboard:
             self.log_dir = f"logs/{name}_{self.start_time.strftime('%Y_%m_%d-%H_%M_%S')}"
             self.train_summary_writer = SummaryWriter(self.log_dir)
+            self.train_summary_writer.add_custom_scalars({
+                'Metrics': {
+                    'Loss': ['Multiline', ['Loss/Training', 'Loss/Validation']],
+                    'Norm': ['Multiline', ['Norm/Grad', 'Norm/Momentum', 'Norm/Update']],
+                    'Angle': ['Multiline', ['Angle/Grad-Momentum', 'Angle/Grad-Update']],
+                    'Episode Rewards': ['Multiline', ["Episode Rewards/Env " + str(env_i) for env_i in range(self.simultaneous_training_env)]],
+                    'Rewards per 1k steps': ['Multiline', ["Rewards per 1k steps/Env " + str(env_i) for env_i in range(self.simultaneous_training_env)]],
+                    'Episode Lengths': ['Multiline', ["Episode Lengths/Env " + str(env_i) for env_i in range(self.simultaneous_training_env)]],
+                    'Epsilon (prod 100)': ['Multiline', ["Epsilon/Env " + str(env_i) for env_i in range(self.simultaneous_training_env)]],
+                    'Episode Mean Loss (last 10k)': ['Multiline', ["Episode Mean Loss/Env " + str(env_i) for env_i in range(self.simultaneous_training_env)]],
+
+                }
+            })
 
     def new_episode(self, i_env):
         """
@@ -228,6 +241,14 @@ class Rainbow:
 
         # Check if episode is done
         if done or truncated:
+            if self.tensorboard:
+                total_rewards = np.sum(self.episode_rewards[i_env])
+                episode_length = self.episode_steps[i_env]
+                self.train_summary_writer.add_scalar('Episode Rewards/Env ' + str(i_env), total_rewards, self.steps)
+                self.train_summary_writer.add_scalar('Rewards per 1k steps/Env ' + str(i_env), 1000 * total_rewards / episode_length, self.steps)
+                self.train_summary_writer.add_scalar('Episode Lengths/Env ' + str(i_env), episode_length, self.steps)
+                self.train_summary_writer.add_scalar('Epsilon/Env ' + str(i_env), self.get_current_epsilon()*100, self.steps)
+                self.train_summary_writer.add_scalar('Episode Mean Loss/Env ' + str(i_env), np.mean(self.losses[-10_000:]), self.steps)
             self.log(i_env)
             self.new_episode(i_env)
 
@@ -244,8 +265,11 @@ class Rainbow:
             truncateds (list): List of truncated flags for each environment.
         """
         for i_env in range(len(actions)):
+            done = dones[i_env]
+            truncated = truncateds[i_env]
             self.store_replay(states[i_env], actions[i_env], rewards[i_env],
-                              next_states[i_env], dones[i_env], truncateds[i_env], i_env=i_env)
+                              next_states[i_env], done, truncated, i_env=i_env)
+
 
     def train(self):
         """
@@ -275,24 +299,22 @@ class Rainbow:
                 self.prioritized_replay_beta_function(sum(self.episode_count), self.steps)
             )
             # Perform training step
-            loss_value, td_errors, metrics = self.train_step(states, actions, rewards, states_prime, dones, importance_weights)
+            td_errors, metrics = self.train_step(states, actions, rewards, states_prime, dones, importance_weights)
             # Update priorities in replay memory
             self.replay_memory.update_priority(batch_indexes, td_errors)
             # Store loss
-            self.losses.append(float(loss_value))
+            self.losses.append(float(metrics['Loss/Training']))
 
             # Log metrics to TensorBoard
-            # TODO: move to caller (notebook | utils)
             if self.tensorboard:
-                self.train_summary_writer.add_scalar('Step Training Loss', loss_value, self.steps)
-                self.train_summary_writer.add_scalar('Gradient Norm', metrics['grad_norm'], self.steps)
-                self.train_summary_writer.add_scalar('Update Norm', metrics['update_norm'], self.steps)
-                self.train_summary_writer.add_scalar('Momentum Norm', metrics['momentum_norm'], self.steps)
-                if not np.isnan(metrics['grad_momentum_angle']):
-                    self.train_summary_writer.add_scalar('Angle between Gradient and Momentum', metrics['grad_momentum_angle'], self.steps)
-                if not np.isnan(metrics['grad_update_angle']):
-                    self.train_summary_writer.add_scalar('Angle between Gradient and Update', metrics['grad_update_angle'], self.steps)
-                self.train_summary_writer.add_scalar('Learning Rate', metrics['learning_rate'], self.steps)
+                self.train_summary_writer.add_scalar('Loss/Training', metrics['Loss/Training'], self.steps)
+                self.train_summary_writer.add_scalar('Norm/Grad', metrics['Norm/Grad'], self.steps)
+                self.train_summary_writer.add_scalar('Norm/Momentum', metrics['Norm/Momentum'], self.steps)
+                self.train_summary_writer.add_scalar('Norm/Update', metrics['Norm/Update'], self.steps)
+                if not np.isnan(metrics['Angle/Grad-Momentum']) and not np.isnan(metrics['Angle/Grad-Update']):
+                    self.train_summary_writer.add_scalar('Angle/Grad-Momentum', metrics['Angle/Grad-Momentum'], self.steps)
+                    self.train_summary_writer.add_scalar('Angle/Grad-Update', metrics['Angle/Grad-Update'], self.steps)
+                self.train_summary_writer.add_scalar('Learning Rate', metrics['Learning Rate'], self.steps)
 
     def log(self, i_env=0):
         """
@@ -344,8 +366,12 @@ class Rainbow:
         epsilon = self.get_current_epsilon()
         if np.random.rand() < epsilon:
             return np.random.choice(self.nb_actions, size=self.simultaneous_training_env)
-        with torch.no_grad():
-            return self.pick_actions(states).detach().cpu().numpy()
+        else:
+            self.model.eval()  # Set model to evaluation mode
+            with torch.no_grad():
+                actions = self.pick_actions(states).detach().cpu().numpy()
+            self.model.train()  # Set model back to training mode
+            return actions
 
     def format_time(self, t: datetime.timedelta):
         """
@@ -388,9 +414,16 @@ class Rainbow:
         Returns:
             float: Validation loss value.
         """
-        if self.distributional:
-            return self._distributional_validation_step(states, actions, rewards_n, states_prime_n, dones_n)
-        return self._classic_validation_step(states, actions, rewards_n, states_prime_n, dones_n)
+        self.model.eval()  # Set model to evaluation mode
+        with torch.no_grad():
+            if self.distributional:
+                td_errors = self._distributional_td_errors(states, actions, rewards_n, states_prime_n, dones_n)
+                loss_value = td_errors.mean()
+            else:
+                td_errors = self._classic_td_errors(states, actions, rewards_n, states_prime_n, dones_n)
+                loss_value = (td_errors.pow(2)).mean()
+        self.model.train()  # Set model back to training mode
+        return loss_value.item()
 
     def pick_action(self, *args, **kwargs):
         """
@@ -482,37 +515,41 @@ class Rainbow:
             td_errors (Tensor): TD errors.
 
         Returns:
-            tuple: (loss value, td_errors, metrics)
+            tuple: (td_errors, metrics)
         """
         self.model_optimizer.zero_grad()
         loss_value.backward()
 
-        # Optimizer metrics
         metrics = {}
+
+        # Optimizer metrics
         grad_norm, grad_vector = self.compute_grad()
-        metrics['grad_norm'] = grad_norm
+        metrics['Norm/Grad'] = grad_norm
 
         # Save parameters before the update
         parameters_before = [p.clone().detach() for p in self.model.parameters()]
         momentum_norm, momentum_vector = self.compute_momentum()
-        metrics['momentum_norm'] = momentum_norm
-        metrics['grad_momentum_angle'] = self.compute_grad_momentum_angle(grad_vector, momentum_vector)
+        metrics['Norm/Momentum'] = momentum_norm
+        metrics['Angle/Grad-Momentum'] = self.compute_grad_momentum_angle(grad_vector, momentum_vector)
 
         # Update parameters
         self.model_optimizer.step()
 
         # Adjust Learning Rate
         learning_rate = self.model_optimizer.param_groups[0]['lr']
-        metrics['learning_rate'] = learning_rate
+        metrics['Learning Rate'] = learning_rate
         if self.scheduler:
-            self.lr_scheduler.step(metrics['grad_norm'])
+            self.lr_scheduler.step(grad_norm)
 
         # Save parameters after the update
         update_norm, update_vector = self.compute_update(parameters_before)
-        metrics['update_norm'] = update_norm
-        metrics['grad_update_angle'] = self.compute_grad_update_angle(grad_vector, update_vector)
+        metrics['Norm/Update'] = update_norm
+        metrics['Angle/Grad-Update'] = self.compute_grad_update_angle(grad_vector, update_vector)
 
-        return loss_value.item(), td_errors.detach().cpu().numpy(), metrics
+        # Save loss_value
+        metrics['Loss/Training'] = loss_value.item()
+
+        return td_errors.detach().cpu().numpy(), metrics
 
     def _classic_pick_actions(self, states):
         """
@@ -651,7 +688,7 @@ class Rainbow:
             weights (array): Importance-sampling weights.
 
         Returns:
-            tuple: (loss value, td_errors, metrics)
+            tuple: (td_errors, metrics)
         """
         weights = torch.tensor(weights, dtype=torch.float32)
         td_errors = self._distributional_td_errors(states, actions, rewards, states_prime, dones)
@@ -762,46 +799,6 @@ class Rainbow:
         return torch.acos(
             dot_product / (grad_vector.norm(2) * update_vector.norm(2) + 1e-8)
         ).item()
-
-    def _classic_validation_step(self, states, actions, rewards_n, states_prime_n, dones_n):
-        """
-        Compute validation loss for classic DQN.
-
-        Args:
-            states (array): Batch of states.
-            actions (array): Batch of actions.
-            rewards_n (array): Batch of rewards.
-            states_prime_n (array): Batch of next states.
-            dones_n (array): Batch of done flags.
-
-        Returns:
-            float: Validation loss value.
-        """
-        with torch.no_grad():
-            td_errors = self._classic_td_errors(states, actions, rewards_n, states_prime_n, dones_n)
-            loss_value = (td_errors.pow(2)).mean()
-
-        return loss_value.item()
-
-    def _distributional_validation_step(self, states, actions, rewards, states_prime, dones):
-        """
-        Compute validation loss for distributional DQN.
-
-        Args:
-            states (array): Batch of states.
-            actions (array): Batch of actions.
-            rewards (array): Batch of rewards.
-            states_prime (array): Batch of next states.
-            dones (array): Batch of done flags.
-
-        Returns:
-            float: Validation loss value.
-        """
-        with torch.no_grad():
-            td_errors = self._distributional_td_errors(states, actions, rewards, states_prime, dones)
-            loss_value = td_errors.mean()
-
-        return loss_value.item()
 
     def save(self, path, **kwargs):
         """

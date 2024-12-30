@@ -267,7 +267,7 @@ def evaluation(agent, validation_envs, validation_batch_size=256):
             )
             # Write validation loss to TensorBoard
             if agent.tensorboard:
-                agent.train_summary_writer.add_scalar('Validation Loss', validation_loss, agent.steps)
+                agent.train_summary_writer.add_scalar('Loss/Validation', validation_loss, agent.steps)
             # Break after computing validation loss
             break
 
@@ -289,4 +289,4 @@ def evaluation(agent, validation_envs, validation_batch_size=256):
                 dones_array
             )
             if agent.tensorboard:
-                agent.train_summary_writer.add_scalar('Validation Loss', validation_loss, agent.steps)
+                agent.train_summary_writer.add_scalar('Loss/Validation', validation_loss, agent.steps)
