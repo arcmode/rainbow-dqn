@@ -11,6 +11,16 @@ The Rainbow Agent is a DQN agent with strong improvments:
 - **Multi-step learning** : Making Temporal Difference bigger than classic DQN (where TD = 1). See paper [Multi-step Reinforcement Learning: A Unifying Algorithm](https://arxiv.org/abs/1703.01327)
 - **NoisyNets** : Replace classic epsilon-greedy exploration/exploitation with noise in the Neural Net. [Noisy Networks for Exploration](https://arxiv.org/abs/1706.10295)
 
+# Disclaimer
+This project is for educational and research purposes only.
+
+* Not intended for real trading or investment
+* No warranties or guarantees provided
+* Past performance does not indicate future results
+* Creator assumes no liability for financial losses
+* Consult a financial advisor for investment decisions
+* By using this software, you agree to use it solely for learning purposes.
+
 ## How to use?
 
 ### Install
@@ -64,7 +74,7 @@ agent = Rainbow(
 
 ##### Use Optimizer Metrics to Diagnose Training Behavior
 
-By tracking these statistics, you can gain insights into the training dynamics:
+By tracking these statistics, we can gain insights into the training dynamics:
 
 - **Gradient Norm**: Indicates how large the gradients are. Small gradients may suggest that the model is near a minimum or stuck in a flat region.
 - **Update Norm**: Shows how much the parameters are being updated. Small updates may indicate convergence or slow progress.

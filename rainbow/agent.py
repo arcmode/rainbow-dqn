@@ -74,7 +74,7 @@ class Rainbow:
                  adversarial = False,
                  noisy = False,
                  # Double DQN
-                 tau = 500,
+                 tau = 250,
                  # Multi-Step replay
                  multi_steps = 1,
                  # Distributional
@@ -92,6 +92,7 @@ class Rainbow:
                  name = "Rainbow",
                  # Scheduler
                  scheduler = False,
+                 modify_lr_steps = 100_000,
                  # TensorBoard
                  tensorboard = False
                  ):
@@ -114,6 +115,7 @@ class Rainbow:
         self.simultaneous_training_env = simultaneous_training_env
         self.tensorboard = tensorboard
         self.scheduler = scheduler
+        self.modify_lr_steps = modify_lr_steps
 
         # Model parameters
         self.recurrent = window > 1
@@ -163,7 +165,7 @@ class Rainbow:
         self.target_model = model_builder.build_model(trainable=False)
         # Initialize target model parameters
         self.target_model.load_state_dict(self.model.state_dict())
-        self.model_optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate, eps=1.5E-4)
+        self.model_optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate, betas=(0.9, 0.999), eps=1E-8)
 
         # Initialize distributional RL parameters
         if self.distributional:
@@ -172,7 +174,7 @@ class Rainbow:
 
         # Learning rate scheduler
         if self.scheduler:
-            self.lr_scheduler = ReduceLROnPlateau(self.model_optimizer, mode='min', factor=0.1, patience=100)
+            self.lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(self.model_optimizer, gamma=0.99)
 
         # Initialize training history
         self.steps = 0
@@ -533,13 +535,15 @@ class Rainbow:
         metrics['Angle/Grad-Momentum'] = self.compute_grad_momentum_angle(grad_vector, momentum_vector)
 
         # Update parameters
+        # Gradient clipping
+        # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
         self.model_optimizer.step()
 
         # Adjust Learning Rate
         learning_rate = self.model_optimizer.param_groups[0]['lr']
         metrics['Learning Rate'] = learning_rate
-        if self.scheduler:
-            self.lr_scheduler.step(grad_norm)
+        if self.scheduler and self.steps % self.modify_lr_steps == 0:
+            self.lr_scheduler.step()
 
         # Save parameters after the update
         update_norm, update_vector = self.compute_update(parameters_before)

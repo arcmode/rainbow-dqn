@@ -170,9 +170,10 @@ def make_agent():
         dropout= 0.2,
         adversarial= True,
         noisy= True,
-        learning_rate = 3*2.5E-5,
+        learning_rate = 2*2.5E-5,
+        scheduler=True,
 
-        batch_size= 128,
+        batch_size= 192,
         train_every = 10,
         epsilon_function = lambda episode, step : max(0.001, (1 - 5E-5)** step),
         name = "Rainbow",
